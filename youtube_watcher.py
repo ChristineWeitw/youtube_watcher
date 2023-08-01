@@ -4,6 +4,12 @@ import requests
 from config import config
 import json
 import pprint
+from confluent_kafka import SerializingProducer
+from confluent_kafka.serialization import StringSerializer
+from confluent_kafka.schema_registry.avro import AvroSerializer
+from confluent_kafka.schema_registry import SchemaRegistryClient
+
+
 def fetch_playlist_items_page(google_api_key, youtube_playlist_id, page_token=None):
     response = requests.get("https://www.googleapis.com/youtube/v3/playlistItems", 
                             params={
@@ -63,8 +69,28 @@ def summarize_video(video):
         "comments": int(video["statistics"].get("commentCount", 0)),
     }
 
+def on_delivery(err, record):
+    pass
+
 def main():
     logging.info("START")
+
+    schema_registry_client = SchemaRegistryClient(config["schema_registry"])
+    youtube_videos_value_schema = schema_registry_client.get_latest_version("youtube_videos-value")
+    
+    kafka_config = config["kafka"].copy()
+    kafka_config.update({
+        "key.serializer": StringSerializer(),   #StringSerializer is used for the key, assuming it's a string.
+
+        # value.serializer is defined as a lambda function that converts the value to a JSON string and encodes it as bytes. 
+        "value.serializer": AvroSerializer(     #set up the AvroSerializer, and provide the Avro schema used for serialization
+            schema_registry_client,
+            youtube_videos_value_schema.schema.schema_str,
+        )
+    })
+    # Configure the producer with AvroSerializer for values
+    producer = SerializingProducer(kafka_config)
+
     google_api_key = config["google_api_key"]
     youtube_playlist_id = config['youtube_playlist_id']
     
@@ -72,8 +98,23 @@ def main():
         video_id = video_item["contentDetails"]["videoId"]
         for video in fetch_videos(google_api_key, video_id):
             logging.info("GOT %s", pprint.pformat(summarize_video(video)))
+
+            # create a producer - a Kafka write-only connection. To write my data packet to a topic
+            # Produce messages to the Kafka topic
+            producer.produce(
+                topic="youtube_videos",
+                key = video_id,
+                value = {
+                        "my_field1": "value_for_my_field1", 
+                        "TITLE": video["snippet"]["title"],
+                        "VIEWS": int(video["statistics"].get("viewCount", 0)),
+                        "LIKES": int(video["statistics"].get("likeCount", 0)),
+                        "COMMENTS": int(video["statistics"].get("commentCount", 0)),
+                },
+                on_delivery = on_delivery
+            )
     
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.INFO)
     sys.exit(main())
