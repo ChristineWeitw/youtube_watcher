@@ -114,6 +114,8 @@ def main():
                 on_delivery = on_delivery
             )
     
+    # Flush to ensure all messages are sent before exiting
+    producer.flush()
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
